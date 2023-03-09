@@ -58,15 +58,12 @@ impl EventHandler for Handler {
 
         // Generate a text response using the OpenAI API
         let response = match reqwest::Client::new()
-            .post("https://api.openai.com/v1/engines/davinci-codex/completions")
+            .post("https://api.openai.com/v1/chat/completions")
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", api_key))
             .json(&serde_json::json!({
-                "prompt": prompt,
-                "max_tokens": 100,
-                "temperature": 0.7,
-                "n": 1,
-                "stop": "\n"
+                "model": "gpt-3.5-turbo",
+                "messages": [{"role": "user", "content": prompt}]
             }))
             .send()
             .await
@@ -86,7 +83,7 @@ impl EventHandler for Handler {
             }
         };
 
-        let message = response_json["choices"][0]["text"]
+        let message = response_json["choices"][0]["message"]["content"]
             .as_str()
             .unwrap_or("I'm sorry, I couldn't generate a response.");
 
