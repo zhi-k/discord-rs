@@ -1,9 +1,9 @@
-use std::env;
 use serenity::async_trait;
-use serenity::prelude::*;
-use serenity::model::channel::Message;
 use serenity::framework::standard::macros::{command, group};
-use serenity::framework::standard::{StandardFramework, CommandResult};
+use serenity::framework::standard::{CommandResult, StandardFramework};
+use serenity::model::channel::Message;
+use serenity::prelude::*;
+use std::env;
 
 #[group]
 #[commands(ping)]
@@ -18,10 +18,12 @@ impl EventHandler for Handler {}
 async fn main() {
     let token = match env::var_os("DISCORD_TOKEN") {
         Some(v) => v.into_string().unwrap(),
-        None => panic!("DISCORD_TOKEN is not set!")
+        None => panic!("DISCORD_TOKEN is not set!"),
     };
 
-    let framework = StandardFramework::new().configure(|c| c.prefix("~")).group(&GENERAL_GROUP);
+    let framework = StandardFramework::new()
+        .configure(|c| c.prefix("!"))
+        .group(&GENERAL_GROUP);
 
     let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
     let mut client = Client::builder(token, intents)
