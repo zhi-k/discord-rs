@@ -1,9 +1,15 @@
+mod commands;
+mod libs;
+
 use serenity::async_trait;
-use serenity::framework::standard::macros::{command, group};
-use serenity::framework::standard::{CommandResult, StandardFramework};
+use serenity::framework::standard::macros::group;
+use serenity::framework::standard::StandardFramework;
 use serenity::model::channel::Message;
+use serenity::model::gateway::Ready;
 use serenity::prelude::*;
 use std::env;
+
+use crate::commands::ping::*;
 
 struct OpenaiKey;
 
@@ -19,6 +25,10 @@ struct Handler;
 
 #[async_trait]
 impl EventHandler for Handler {
+    async fn ready(&self, _: Context, ready: Ready) {
+        println!("Connected as {}", ready.user.name);
+    }
+
     async fn message(&self, ctx: Context, msg: Message) {
         // Check if the bot was mentioned in the message
         let bot_id = ctx.cache.current_user_id();
@@ -123,13 +133,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(why) = client.start().await {
         println!("An error occurred while running the client: {:?}", why);
     }
-
-    Ok(())
-}
-
-#[command]
-async fn ping(ctx: &Context, msg: &Message) -> CommandResult {
-    msg.reply(ctx, "Pong!").await?;
 
     Ok(())
 }
