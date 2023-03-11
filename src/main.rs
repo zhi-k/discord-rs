@@ -63,7 +63,10 @@ impl EventHandler for Handler {
             .header("Authorization", format!("Bearer {}", api_key))
             .json(&serde_json::json!({
                 "model": "gpt-3.5-turbo",
-                "messages": [{"role": "user", "content": prompt}]
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": prompt}
+                ]
             }))
             .send()
             .await
