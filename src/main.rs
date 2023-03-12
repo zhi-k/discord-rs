@@ -17,11 +17,13 @@ use crate::commands::ping::*;
 use crate::libs::redis::{acquire_lock, add_conversation, get_conn, get_conversations};
 use crate::openai::request::{generate_response, Message as RequestMessage, PRIMER};
 
+#[derive(Debug)]
 struct RedisClient {}
 impl TypeMapKey for RedisClient {
     type Value = Arc<redis::Client>;
 }
 
+#[derive(Debug)]
 struct OpenAiKey {}
 impl TypeMapKey for OpenAiKey {
     type Value = String;
@@ -30,6 +32,19 @@ impl TypeMapKey for OpenAiKey {
 #[group]
 #[commands(ping, clear)]
 struct General;
+
+fn remove_mentions(msg: String) -> String {
+    let mut message = msg;
+    while let Some(start) = message.find("<@") {
+        match message[start..].find('>') {
+            Some(end) => {
+                message.replace_range(start..start + end + 1, "");
+            }
+            None => break,
+        }
+    }
+    message.trim().to_string()
+}
 
 struct Handler;
 
@@ -69,20 +84,18 @@ impl EventHandler for Handler {
             return ();
         }
 
-        let conversations =
-            get_conversations(&mut redis_conn, user_id.to_string().as_str()).unwrap();
+        let conversations = get_conversations(&mut redis_conn, user_id.to_string().as_str())
+            .expect("Get conversations here.");
 
         let mut reversed_conversations = conversations.clone();
         if reversed_conversations.len() == 0 {
             reversed_conversations.push(RequestMessage {
                 content: PRIMER.to_string(),
-                role: "system".to_string(),
+                role: "user".to_string(),
             });
-        } else {
-            reversed_conversations.reverse();
         }
 
-        let prompt = format!("{} ", msg.content);
+        let prompt = format!("{}", remove_mentions(msg.content.clone()));
         if prompt.len() > 2048 {
             if let Err(why) = msg
                 .channel_id
@@ -139,13 +152,7 @@ impl EventHandler for Handler {
         };
 
         // Send the response back to the channel
-        if let Err(why) = msg
-            .channel_id
-            .send_message(&ctx.http, |m| {
-                m.content(format_args!("{}, {}", msg.author.mention(), message))
-            })
-            .await
-        {
+        if let Err(why) = msg.reply(&ctx.http, message).await {
             println!("Error sending message: {:?}", why);
         }
     }

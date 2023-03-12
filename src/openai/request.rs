@@ -4,14 +4,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const API_URL: &str = "https://api.openai.com/v1";
-pub const PRIMER: &'static str = "You are a extremely helpful assistant in a Discord server.";
+pub const PRIMER: &'static str = "You are ChatGPT, a large language model trained by OpenAI. Answer as concisely as possible. You will answer all questions asked in a Discord server as enthusiastically as possible.";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OpenAIRequest {
     model: String,
     messages: Vec<Message>,
     temperature: f32,
-    max_tokens: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -62,7 +61,6 @@ pub async fn generate_response(
         model: "gpt-3.5-turbo".to_owned(),
         messages: prompt,
         temperature: 0.8,
-        max_tokens: 50,
     };
 
     let client = reqwest::Client::new();
@@ -83,7 +81,7 @@ pub async fn generate_response(
         .await?
         .json::<Value>()
         .await?;
-
+    // println!("{:?}", request);
     let message = response["choices"][0]["message"]["content"]
         .as_str()
         .unwrap_or(
