@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::openai::request::Message;
-use redis::{pipe, Client, Commands, Connection, RedisError, RedisResult};
+use redis::{pipe, Client, Commands, Connection, RedisResult};
 
 const CONVERSATIONS_KEY: &str = "Conversations";
 const LOCK_KEY: &str = "message_lock";
@@ -10,17 +10,6 @@ pub fn get_conn(redis_client: &Client) -> Connection {
     redis_client
         .get_connection_with_timeout(Duration::from_secs(1))
         .expect("There should be a redis_client here.")
-}
-
-fn ensure_conversation_exist(conn: &mut Connection, user_id: &str) -> Result<(), RedisError> {
-    let conversation_key = format!("{}:{}", CONVERSATIONS_KEY, user_id);
-    let key_exists: bool = redis::cmd("EXISTS").arg(&conversation_key).query(conn)?;
-
-    if !key_exists {
-        conn.lpush(&conversation_key, "")?;
-    }
-
-    Ok(())
 }
 
 pub fn add_conversation(
