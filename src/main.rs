@@ -1,24 +1,34 @@
 mod commands;
 mod libs;
+mod openai;
 
+use libs::redis::release_lock;
 use serenity::async_trait;
 use serenity::framework::standard::macros::group;
 use serenity::framework::standard::StandardFramework;
-use serenity::model::channel::Message;
-use serenity::model::gateway::Ready;
+use serenity::model::prelude::Message;
+use serenity::model::prelude::Ready;
 use serenity::prelude::*;
 use std::env;
+use std::sync::Arc;
 
+use crate::commands::clear::*;
 use crate::commands::ping::*;
+use crate::libs::redis::{acquire_lock, add_conversation, get_conn, get_conversations};
+use crate::openai::request::{generate_response, Message as RequestMessage, PRIMER};
 
-struct OpenaiKey;
+struct RedisClient {}
+impl TypeMapKey for RedisClient {
+    type Value = Arc<redis::Client>;
+}
 
-impl TypeMapKey for OpenaiKey {
+struct OpenAiKey {}
+impl TypeMapKey for OpenAiKey {
     type Value = String;
 }
 
 #[group]
-#[commands(ping)]
+#[commands(ping, clear)]
 struct General;
 
 struct Handler;
@@ -35,73 +45,107 @@ impl EventHandler for Handler {
         let mentioned = msg.mentions_user_id(bot_id);
 
         if !mentioned {
-            return;
+            return ();
         }
 
-        // Retrieve the API key from the context data
-        let api_key = {
-            let data = ctx.data.read().await;
-            match data.get::<OpenaiKey>() {
-                Some(key) => key.to_owned(),
-                None => {
-                    println!("OpenAI API key not found");
-                    return;
-                }
-            }
-        };
+        let user_id = msg.author.id;
+        let user_mention = msg.author.mention();
+        let message_id = msg.id;
+
+        let data = ctx.data.read().await;
+        let api_key = data
+            .get::<OpenAiKey>()
+            .expect("There should be api_key here.");
+        let redis_client = data
+            .get::<RedisClient>()
+            .expect("There should be redis_client here.");
+
+        let mut redis_conn = get_conn(&mut &redis_client);
+
+        let lock = acquire_lock(&mut redis_conn, message_id.to_string().as_str()).unwrap();
+
+        // cant acquire lock means some other instance is already processing
+        if !lock {
+            return ();
+        }
+
+        let conversations =
+            get_conversations(&mut redis_conn, user_id.to_string().as_str()).unwrap();
+
+        let mut reversed_conversations = conversations.clone();
+        if reversed_conversations.len() == 0 {
+            reversed_conversations.push(RequestMessage {
+                content: PRIMER.to_string(),
+                role: "system".to_string(),
+            });
+        } else {
+            reversed_conversations.reverse();
+        }
 
         let prompt = format!("{} ", msg.content);
-
         if prompt.len() > 2048 {
             if let Err(why) = msg
                 .channel_id
                 .say(
                     &ctx.http,
-                    "Error: prompt length exceeds maximum of 2048 tokens",
+                    format!(
+                        "Error: {}, your prompt length exceeds the maximum of 2048 tokens",
+                        user_mention
+                    ),
                 )
                 .await
             {
                 println!("Error sending message: {:?}", why);
             }
+            if let Err(why) = release_lock(&mut redis_conn, message_id.to_string().as_str()) {
+                println!("Unable to release lock, {}", why);
+            };
             return;
         }
 
-        // Generate a text response using the OpenAI API
-        let response = match reqwest::Client::new()
-            .post("https://api.openai.com/v1/chat/completions")
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", api_key))
-            .json(&serde_json::json!({
-                "model": "gpt-3.5-turbo",
-                "messages": [
-                    {"role": "system", "content": "You are a helpful assistant."},
-                    {"role": "user", "content": prompt}
-                ]
-            }))
-            .send()
+        reversed_conversations.push(RequestMessage {
+            content: prompt.clone(),
+            role: "user".to_string(),
+        });
+
+        let message = generate_response(api_key.as_str(), reversed_conversations.clone())
             .await
-        {
-            Ok(resp) => resp,
-            Err(e) => {
-                println!("Error sending request to OpenAI API: {:?}", e);
-                return;
-            }
-        };
+            .unwrap();
 
-        let response_json = match response.json::<serde_json::Value>().await {
-            Ok(json) => json,
-            Err(e) => {
-                println!("Error parsing response from OpenAI API: {:?}", e);
-                return;
-            }
-        };
+        reversed_conversations.push(RequestMessage {
+            role: "assistant".to_owned(),
+            content: message.clone(),
+        });
 
-        let message = response_json["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or("I'm sorry, I couldn't generate a response.");
+        let assistant_result = add_conversation(
+            &mut redis_conn,
+            user_id.to_string().as_str(),
+            &reversed_conversations,
+        );
+
+        match assistant_result {
+            Ok(()) => {}
+            Err(why) => {
+                eprintln!("Error add_conversation user: {}", why);
+                if let Err(why) = release_lock(&mut redis_conn, message_id.to_string().as_str()) {
+                    println!("Unable to release lock, {}", why);
+                };
+                return ();
+            }
+        }
+
+        if let Err(why) = release_lock(&mut redis_conn, message_id.to_string().as_str()) {
+            println!("Unable to release lock, {}", why);
+        };
 
         // Send the response back to the channel
-        if let Err(why) = msg.channel_id.say(&ctx.http, message).await {
+        if let Err(why) = msg
+            .channel_id
+            .send_message(&ctx.http, |m| {
+                m.content(format_args!("{}, {}", msg.author.mention(), message))
+            })
+            .await
+        {
             println!("Error sending message: {:?}", why);
         }
     }
@@ -113,6 +157,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         env::var("DISCORD_TOKEN").map_err(|_| "DISCORD_TOKEN environment variable not set")?;
     let openai_key =
         env::var("OPENAI_API_KEY").map_err(|_| "OPENAI_API_KEY environment variable not set")?;
+    let redis_url = env::var("REDIS_URL").map_err(|_| "REDIS_URL environment variable not set")?;
 
     let framework = StandardFramework::new()
         .configure(|c| c.prefix("!"))
@@ -126,7 +171,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         let mut data = client.data.write().await;
-        data.insert::<OpenaiKey>(openai_key);
+        data.insert::<OpenAiKey>(openai_key);
+
+        match redis::Client::open(redis_url) {
+            redis::RedisResult::Ok(client) => {
+                println!("Redis client created");
+                data.insert::<RedisClient>(Arc::new(client));
+            }
+            redis::RedisResult::Err(error) => {
+                println!("Error connecting to Redis: {}", error);
+            }
+        }
     }
 
     // start listening for events by starting a single shard
